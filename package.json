@@ -1,0 +1,53 @@
+{
+  "name": "dsh-doc-review",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness (DSH) 文档审查插件：注册 doc_review 工具，派生独立子会话对目标文档做多维度、多轮结构化审查并落盘归档。",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "doc-review",
+    "document-review"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "skills/",
+    "test/",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JiewiW/dsh-doc-review.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JiewiW/dsh-doc-review/issues"
+  },
+  "homepage": "https://github.com/JiewiW/dsh-doc-review#readme",
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-subagent": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "license": "MIT"
+}

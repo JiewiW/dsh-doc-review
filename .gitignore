@@ -1,0 +1,21 @@
+# 依赖
+node_modules/
+
+# 运行期归档（doc_review 多轮链产物）
+.doc-review/
+
+# 日志
+*.log
+logs/
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 备份与临时文件
+*.bak
+*.bak-*
+*.tmp
+*.pid
