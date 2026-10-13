@@ -19,6 +19,7 @@ import { apply, inject, name } from "../lib/index.js";
 
 const registeredCommands = [];
 const scopedRegisteredTools = [];
+const providedServices = [];
 const warnings = [];
 
 /** 最小 mock ctx：只实现 index.js apply 用到的面。 */
@@ -42,6 +43,14 @@ function makeMockCtx() {
 				return providerName === "spawn" ? { name: "spawn" } : undefined;
 			}
 		},
+		// v0.2.1：分叉版 cordis 服务注册走 ctx.reflect.provide(name, value)，
+		// 返回 disposer（真实实现见 @deepseek-ai/cordis ReflectService.provide）。
+		reflect: {
+			provide(serviceName, serviceValue) {
+				providedServices.push({ name: serviceName, value: serviceValue });
+				return () => {};
+			}
+		},
 		logger: {
 			warn(message) {
 				warnings.push(message);
@@ -63,6 +72,12 @@ assert.equal(registeredCommands[0].name, "doc-review");
 assert.equal(typeof registeredCommands[0].handler, "function");
 assert.equal(scopedRegisteredTools.length, 0, "未激活时不得有任何工具注册（含全局）");
 assert.equal(typeof dispose, "function", "apply 必须返回清理函数");
+
+// —— 1b) v0.2.1：docReview service 经 reflect.provide 暴露，reviewPrompt 可调用 ——
+assert.equal(providedServices.length, 1, "apply 必须恰提供一个 ctx service");
+assert.equal(providedServices[0].name, "docReview");
+assert.equal(typeof providedServices[0].value?.reviewPrompt, "function", "service 必须暴露 reviewPrompt");
+assert.equal(typeof providedServices[0].value?.dispose, "function", "service 必须暴露 dispose");
 
 // —— 2) 激活路径：假 agent 触发 handler，DSL 在 scoped 注册点编译 ——
 const followups = [];
