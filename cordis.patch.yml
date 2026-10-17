@@ -1,0 +1,6 @@
+# dsh-doc-review bundle patch：插入 doc-review 插件行。
+# 开发/冒烟期以 `dsh web --port <自定义端口> --patch <本文件绝对路径>` overlay 加载；
+# 相对路径由内核 anchorInsertedPluginNames 锚定到本文件所在目录并转 file:// URL。
+- insert:
+    - id: dsh-external/dsh-doc-review
+      name: ./lib/index.js
