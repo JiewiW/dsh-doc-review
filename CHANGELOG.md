@@ -2,6 +2,48 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 约定，版本号遵循语义化版本。
 
+## [0.2.4] - 2026-10-23
+
+### 变更
+
+- **弱模型子会话的 JSON 输出容错（修复「必炸 + 重灌」循环失败）**：生产取证显示，
+  7 次 doc-reviewer 子会话中仅 3 次真正调用 `structured_output` 工具，其余 4 次把
+  完整合规的 JSON 直接输出在正文里；插件原先只在 `structured !== undefined` 时判
+  成功，导致这 4 次一律被判失败并重开子会话，而重开时 `buildAttemptPrompt` 又把
+  目标文档全文重新灌一遍——模型注意力被长文档拉回「重新审查」，连续多轮仍产不出
+  合规 JSON。0.2.4 起三处改造：
+  - **输出指令消歧**：原指令字面写作「只输出一个符合 outputSchema 的 JSON 对象」，
+    与内核「必须调用 `structured_output` 工具」的要求相互矛盾，等于主动诱导模型吐
+    纯文本。改为明确要求调用工具，声明正文里的 JSON 不会被采纳，并显式列出两条实测
+    易错点（`evidence`/`suggestion` 属 `issues` 元素内部字段，不得写到顶层；五个顶层
+    字段缺一不可且不得多出）。
+  - **正文 JSON 兜底**：新增 `extractJsonObject`（围栏优先 + 括号深度与转义状态机
+    切割，超长文本截断到 200000 字符）与 `parseFreeformReport`（JSON.parse 后依次经
+    schema 校验与业务规则校验）。结构化结果缺失但正文可解析且校验全通过时，直接采纳
+    为报告并打 `source: "freeform-salvage"` 日志，不再重开子会话。真实语料回放
+    4 个「白失败」子会话救回 3 个（第四个本身零正文，无内容可救）。
+  - **重试不再重灌全文**：`buildAttemptPrompt` 拆为两路。默认走精简路，只发「本次任务：
+    只修格式，不重新审查」＋上一版输出＋校验违规原因，不含目标文档；仅当违规涉及
+    `location` 引句（必须对照原文修正）或上次非正常结束（`stopReason` 非 completed /
+    max-tokens）时，才由 `needsFullInputOnRetry` 回退到重灌全文。
+
+### 测试
+
+- 新增 `test/reviewer.test.mjs`（12 条）：覆盖 `extractJsonObject` 的裸 JSON / 围栏 /
+  无 JSON / 括号不闭合四种输入；`parseFreeformReport` 的合规回收、缺顶层字段不回收、
+  `location` 未命中不回收、数组与 null 不回收；输出指令含 `structured_output` 与
+  「工具调用」字样；`buildAttemptPrompt` 首次含全文、普通违规重试不含全文且含「只修
+  格式」与「上一版输出」、`location` 违规与 `stopReason=error` 回退重灌；
+  `runReviewerSession` 在正文合规 JSON 时一次成功（`attempts=1`、`retries=0`、
+  `start()` 仅调用 1 次）；第二次 prompt 不含输入包标记。
+- 全量回归 144/144 pass。
+
+### 兼容性
+
+- 输出协议与报告 schema 不变；兜底只在原先判失败的分支上新增一条成功通路，不影响
+  正常调用 `structured_output` 的路径（该路径日志补 `source: "structured_output"`）。
+- 依赖内核注入的 `structured_output` 工具与指令，未修改内核，亦未新增依赖。
+
 ## [0.2.3] - 2026-10-16
 
 ### 变更

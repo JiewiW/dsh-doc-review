@@ -1,6 +1,6 @@
 {
   "name": "dsh-doc-review",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "DeepSeek Harness (DSH) 文档审查插件：注册 doc_review 工具，派生独立子会话对目标文档做多维度、多轮结构化审查并落盘归档。需以 /doc-review 斜杠指令在本会话手动激活。",
   "keywords": [
     "dsh",
