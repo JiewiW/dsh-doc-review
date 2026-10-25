@@ -92,7 +92,7 @@ dsh web --port <自定义端口> --patch (Resolve-Path <插件目录>\cordis.pat
 若你的 DSH 版本支持从 git 安装第三方插件，可直接：
 
 ```bash
-dsh plugin add github:JiewiW/dsh-doc-review#v0.2.4
+dsh plugin add github:JiewiW/dsh-doc-review#v0.3.2
 ```
 
 不同 0.2.0 预览版的插件安装命令可能有差异，以当前 DSH 版本的 `dsh --help` / 插件文档为准；方式 A 的 `--patch` overlay 是与具体版本耦合最小、最稳妥的挂载方式。

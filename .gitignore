@@ -24,3 +24,7 @@ Thumbs.db
 e2e-workspace/
 evidence/
 p05-pilot/
+
+# 取证/任务报告（含本机路径，不随公开发布）
+REPORT-*.md
+REPORT-*.md.bak

@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 约定，版本号遵循语义化版本。
 
+## [0.3.2] - 2026-10-25
+
+### 修复
+
+- **审查 session 结论抢救（salvage）与链级续取**：修复「审查 session 已产出结论但回传链路异常，主会话误判失败重开审查浪费 token」的竞态。
+  - `lib/session-reviewer.js`：wait 300s 超时（未 settle）时不再直接判 timeout，先经 `inspectReviewSession` 读审查 session 既有结论——freeform 非空即复用（合规 JSON 直接返回 `report`，JSON 不合规降级 `freeform` 不重试，运行时零新增 LLM 调用）；确无结论才 kill monitor + timeout。
+  - timeout 信封全链路透传 `sessionId`（`lib/session-reviewer.js` 6 处返回点、`lib/service.js` 信封、`lib/tool.js` 降级返回），`next_action` 改为「带同一 `chain_id` 重调时优先续取该 session 结论，确无结论再新开」。
+  - `lib/reviewer.js`：补 `validateReport` import（既有缺失，导致自由文本 JSON 兜底解析路径必然抛错）。
+- 新增 `test/test-session-salvage.mjs`（A-F 六用例）：覆盖 salvage 命中/未命中、kill 前 salvage、sessionId 全链路透传、正常完成路径不回归、JSON 不合规零重试。
+
 ## [0.2.4] - 2026-10-23
 
 ### 变更
