@@ -22,7 +22,7 @@ const scopedRegisteredTools = [];
 const providedServices = [];
 const warnings = [];
 
-/** 最小 mock ctx：只实现 index.js apply 用到的面。 */
+/** 最小 mock ctx：只实现 index.js apply 用到的面（v0.3.0：typertGateway/jobs 取代 subagents）。 */
 function makeMockCtx() {
 	return {
 		tools: {
@@ -38,10 +38,13 @@ function makeMockCtx() {
 				return () => {};
 			}
 		},
-		subagents: {
-			getProvider(providerName) {
-				return providerName === "spawn" ? { name: "spawn" } : undefined;
-			}
+		// v0.3.0：审查派发走 TypertGateway（session create/rename/prompt/list/follow）
+		// 与 JobRegistry（后台监视 job）；subagents 已弃用。
+		typertGateway: {
+			invoke: async () => ({})
+		},
+		jobs: {
+			start: async () => ({ id: "job-smoke" })
 		},
 		// v0.2.1：分叉版 cordis 服务注册走 ctx.reflect.provide(name, value)，
 		// 返回 disposer（真实实现见 @deepseek-ai/cordis ReflectService.provide）。
@@ -60,7 +63,7 @@ function makeMockCtx() {
 }
 
 assert.equal(name, "dsh-doc-review");
-assert.deepEqual(inject, ["tools", "commands", "subagents", "sessions", "skills"]);
+assert.deepEqual(inject, ["tools", "commands", "typertGateway", "jobs", "sessions", "skills"]);
 assert.equal(typeof apply, "function");
 
 const mockCtx = makeMockCtx();
@@ -119,10 +122,10 @@ assert.match(errorResult.text, /doc_review_activate_failed/);
 
 dispose();
 
-// —— 5) spawn provider 缺失时应 warn 但不抛错（运行期降级路径②兜底）——
+// —— 5) gateway/jobs 缺失时应 warn 但不抛错（运行期降级路径②兜底）——
 const emptyCtx = makeMockCtx();
-emptyCtx.subagents.getProvider = () => undefined;
+emptyCtx.typertGateway = undefined;
 apply(emptyCtx);
-assert.ok(warnings.some((message) => message.includes("spawn")), "provider 缺失必须 warn");
+assert.ok(warnings.some((message) => message.includes("gateway/jobs")), "gateway/jobs 缺失必须 warn");
 
 console.log("smoke-apply: PASS（apply 装配 + 未激活零工具注册 + 激活路径 DSL 编译 + 幂等 + error 分支全通过）");

@@ -1,5 +1,5 @@
 /**
- * lib/tool.js 集成测试（端到端，不经真实子会话，subagents 全 stub）。
+ * lib/tool.js 集成测试（端到端，不经真实子会话，gateway/jobs 全 mock）。
  * 运行命令（仓库根目录）：node --test test/
  *
  * 覆盖：
@@ -24,6 +24,7 @@ import { createDocReviewTool } from "../lib/tool.js";
 import { buildReviewInput } from "../lib/context-builder.js";
 import { buildSamplePlan, estimateRound } from "../lib/cost.js";
 import { readChainCostState } from "../lib/archive.js";
+import { makeReviewHarness } from "./gateway-harness.mjs";
 
 const mkdtempAsync = promisify(mkdtemp);
 
@@ -60,37 +61,30 @@ function makeReport(location, overrides = {}) {
 }
 
 /**
- * 构造 subagents stub：记录 start 调用次数与每次 prompt，子会话恒返回指定 structured 报告。
- * @param {object} report 子会话 structured 输出。
- * @returns {{deps: object, calls: object[], concludeTurnCalls: object[]}} 探测集合。
+ * 构造 gateway/jobs harness：审查员恒返回指定报告 JSON（一次 settle）。
+ *
+ * v0.3.0 起审查经 session 架构执行（launch → monitor job → 收 freeform 文本 →
+ * parseFreeformReport 校验），旧 subagents stub 的 `calls[i].prompt` 对应物：
+ *   harness.calls.length      → harness.count("invoke:create")（每次审查开一个 session）
+ *   harness.calls[0].prompt   → harness.prompts[0]（session/prompt 的文本）
+ * @param {object} report 审查员结构化报告（序列化后作为结论文本）。
+ * @returns {object} makeReviewHarness 产物。
  */
 function makeHarness(report) {
-	const calls = [];
-	const concludeTurnCalls = [];
-	const deps = {
-		subagents: {
-			getProvider: () => ({}),
-			start: async (_provider, request) => {
-				calls.push(request);
-				return {
-					id: `run-${calls.length}`,
-					result: Promise.resolve({ stopReason: "completed", structured: report, output: [] }),
-					dispose: async () => {}
-				};
-			}
-		}
-	};
-	return { deps, calls, concludeTurnCalls };
+	return makeReviewHarness({
+		attempts: [{ wait: { status: "completed" }, result: JSON.stringify(report) }]
+	});
 }
 
 /**
  * 构造 ToolRunContext stub（cwd 指向临时目录，归档落此处）。
  * @param {string} cwd 临时工作区根。
- * @param {object[]} concludeTurnCalls concludeTurn 调用记录数组。
- * @returns {object} exec stub。
+ * @param {object[]} [concludeTurnCalls] concludeTurn 调用记录数组（缺省自持，挂到 exec 上）。
+ * @returns {object} exec stub（附 deferredContexts / concludeTurnCalls 探测数组）。
  */
 function makeExec(cwd, concludeTurnCalls) {
 	const deferredContexts = [];
+	const concludeRecords = concludeTurnCalls ?? [];
 	const exec = {
 		agent: {
 			session: {
@@ -104,10 +98,10 @@ function makeExec(cwd, concludeTurnCalls) {
 			deferredContexts.push(context);
 		},
 		concludeTurn(payload) {
-			concludeTurnCalls.push(payload ?? {});
+			concludeRecords.push(payload ?? {});
 		}
 	};
-	return Object.assign(exec, { deferredContexts });
+	return Object.assign(exec, { deferredContexts, concludeTurnCalls: concludeRecords });
 }
 
 /**
@@ -138,19 +132,20 @@ test("A10-1 大输入首调未确认：零子会话、confirmationRequired、不
 	const cwd = await mkdtempAsync(join(tmpdir(), "docrev-a101-"));
 	const bigDocument = `# 大文档\n\n${BIG_SENTENCE.repeat(900)}`;
 	const harness = makeHarness(makeReport(BIG_SENTENCE));
+	const concludeTurnCalls = [];
 	const tool = createDocReviewTool(harness.deps);
 
 	const result = await tool.execute(
 		{ target_content: bigDocument, max_rounds: 3 },
-		makeExec(cwd, harness.concludeTurnCalls)
+		makeExec(cwd, concludeTurnCalls)
 	);
 
 	assert.strictEqual(result.confirmationRequired, true);
 	assert.strictEqual(result.report, undefined);
 	assert.strictEqual(result.costEstimate.reason, "worst-case-over-threshold");
 	assert.ok(result.costEstimate.worstCaseTokens > 20000, "前置条件：最坏口径须 >20k");
-	assert.strictEqual(harness.calls.length, 0, "拦截分支不得派发子会话");
-	assert.strictEqual(harness.concludeTurnCalls.length, 0, "T10 修复后拦截不再 concludeTurn（turn 保持存活）");
+	assert.strictEqual(harness.count("invoke:create"), 0, "拦截分支不得派发子会话");
+	assert.strictEqual(concludeTurnCalls.length, 0, "T10 修复后拦截不再 concludeTurn（turn 保持存活）");
 	assertMatchesOutputSchema(tool, result);
 });
 
@@ -164,13 +159,13 @@ test("A10-2/3 同链 confirm 放行后，后续轮（累计未超预算）不再
 	const document = `# 中等文档\n\n${MOD_SENTENCE.repeat(80)}`;
 	const harness = makeHarness(makeReport(MOD_SENTENCE));
 	const tool = createDocReviewTool(harness.deps);
-	const exec = makeExec(cwd, harness.concludeTurnCalls);
+	const exec = makeExec(cwd);
 
 	// 首次未确认：worst 拦截（建立基线，证明该文档确属需确认体量）。
 	const blocked = await tool.execute({ target_content: document, max_rounds: 3 }, exec);
 	assert.strictEqual(blocked.confirmationRequired, true);
 	assert.strictEqual(blocked.costEstimate.reason, "worst-case-over-threshold");
-	assert.strictEqual(harness.calls.length, 0);
+	assert.strictEqual(harness.count("invoke:create"), 0);
 
 	// 带 confirm_token_budget=true 重调首轮：放行，落链 confirmed。
 	const round1 = await tool.execute(
@@ -180,7 +175,7 @@ test("A10-2/3 同链 confirm 放行后，后续轮（累计未超预算）不再
 	assert.strictEqual(round1.confirmationRequired, undefined);
 	assert.ok(round1.report, "放行后须产出 report");
 	assert.strictEqual(round1.round, 1);
-	assert.strictEqual(harness.calls.length, 1, "首轮放行派发 1 个子会话");
+	assert.strictEqual(harness.count("invoke:create"), 1, "首轮放行派发 1 个审查 session");
 	assertMatchesOutputSchema(tool, round1);
 	const chainId = round1.chainId;
 	const worstOne = round1.costEstimate.worstCaseTokens;
@@ -198,7 +193,7 @@ test("A10-2/3 同链 confirm 放行后，后续轮（累计未超预算）不再
 	assert.strictEqual(round2.confirmationRequired, undefined, "同链后续轮不得重复 worst 确认");
 	assert.strictEqual(round2.round, 2);
 	assert.ok(round2.report);
-	assert.strictEqual(harness.calls.length, 2, "第二轮直接派发，无子会话拦截");
+	assert.strictEqual(harness.count("invoke:create"), 2, "第二轮直接派发，无审查 session 拦截");
 	assertMatchesOutputSchema(tool, round2);
 	const stateAfterR2 = readCost(cwd, chainId);
 	assert.strictEqual(stateAfterR2.rounds.length, 2);
@@ -218,8 +213,8 @@ test("A10-4 链累计超预算拦截登记 pendingCumulativeAck，带 confirm �
 	const harness2 = makeHarness(makeReport(BIG_SENTENCE));
 	const tool1 = createDocReviewTool(harness1.deps);
 	const tool2 = createDocReviewTool(harness2.deps);
-	const exec1 = makeExec(cwd, harness1.concludeTurnCalls);
-	const exec2 = makeExec(cwd, harness2.concludeTurnCalls);
+	const exec1 = makeExec(cwd);
+	const exec2 = makeExec(cwd);
 
 	// 首轮带 confirm：worst>20k 被链确认放行，累计投影 W1<60k 不触发累计守卫。
 	const round1 = await tool1.execute(
@@ -227,7 +222,7 @@ test("A10-4 链累计超预算拦截登记 pendingCumulativeAck，带 confirm �
 		exec1
 	);
 	assert.strictEqual(round1.confirmationRequired, undefined);
-	assert.strictEqual(harness1.calls.length, 1);
+	assert.strictEqual(harness1.count("invoke:create"), 1);
 	const chainId = round1.chainId;
 	const worstOne = round1.costEstimate.worstCaseTokens;
 	assert.ok(worstOne > 20000, "前置：round1 单轮最坏 >20k");
@@ -242,8 +237,8 @@ test("A10-4 链累计超预算拦截登记 pendingCumulativeAck，带 confirm �
 	assert.strictEqual(blocked.costEstimate.reason, "chain-cumulative-over-budget");
 	const worstTwo = blocked.costEstimate.worstCaseTokens;
 	assert.ok(worstOne + worstTwo > 20000 * 3, "前置：两轮累计投影超链预算");
-	assert.strictEqual(harness2.calls.length, 0, "累计拦截不得派发子会话");
-	assert.strictEqual(harness2.concludeTurnCalls.length, 0, "T10 修复后拦截不结束 turn，由主 Agent 走 ask_user_question");
+	assert.strictEqual(harness2.count("invoke:create"), 0, "累计拦截不得派发子会话");
+	assert.strictEqual(exec2.concludeTurnCalls.length, 0, "T10 修复后拦截不结束 turn，由主 Agent 走 ask_user_question");
 	const stateBlocked = readCost(cwd, chainId);
 	assert.strictEqual(stateBlocked.pendingCumulativeAck, worstOne + worstTwo, "须登记待确认投影值");
 	assert.strictEqual(stateBlocked.rounds.length, 1, "拦截轮不写入 rounds");
@@ -264,7 +259,7 @@ test("A10-4 链累计超预算拦截登记 pendingCumulativeAck，带 confirm �
 	assert.strictEqual(round2.confirmationRequired, undefined, "投影一致的再次确认须放行");
 	assert.strictEqual(round2.round, 2);
 	assert.ok(round2.report);
-	assert.strictEqual(harness2.calls.length, 1, "重调放行后派发 1 个子会话");
+	assert.strictEqual(harness2.count("invoke:create"), 1, "重调放行后派发 1 个审查 session");
 	assertMatchesOutputSchema(tool2, round2);
 	const statePassed = readCost(cwd, chainId);
 	assert.strictEqual(statePassed.pendingCumulativeAck, null);
@@ -284,7 +279,7 @@ test("A10-5 worst 与 cumulative 同时超预算：首次拦截登记投影，�
 	const bigDocument = `# 大文档\n\n${BIG_SENTENCE.repeat(900)}`;
 	const harness = makeHarness(makeReport(BIG_SENTENCE));
 	const tool = createDocReviewTool(harness.deps);
-	const exec = makeExec(cwd, harness.concludeTurnCalls);
+	const exec = makeExec(cwd);
 
 	// 首次未确认：worst 拦截（此时 worst 与 cumulative 两门都超，但 worst 判定优先）。
 	const blocked = await tool.execute(
@@ -293,7 +288,7 @@ test("A10-5 worst 与 cumulative 同时超预算：首次拦截登记投影，�
 	);
 	assert.strictEqual(blocked.confirmationRequired, true);
 	assert.strictEqual(blocked.costEstimate.reason, "worst-case-over-threshold");
-	assert.strictEqual(harness.calls.length, 0);
+	assert.strictEqual(harness.count("invoke:create"), 0);
 	const worstOne = blocked.costEstimate.worstCaseTokens;
 	assert.ok(worstOne > 20000, "前置：单轮最坏 >20k");
 	assert.strictEqual(blocked.costEstimate.chainBudgetTokens, 20000, "前置：maxRounds=1 链预算=20k");
@@ -312,7 +307,7 @@ test("A10-5 worst 与 cumulative 同时超预算：首次拦截登记投影，�
 	assert.strictEqual(round1.confirmationRequired, undefined, "一次 confirm 须同时过 worst+cumulative 两门");
 	assert.strictEqual(round1.round, 1);
 	assert.ok(round1.report, "放行后须产出 report");
-	assert.strictEqual(harness.calls.length, 1, "一次确认后即派发 1 个子会话，不得要求第二次确认");
+	assert.strictEqual(harness.count("invoke:create"), 1, "一次确认后即派发 1 个审查 session，不得要求第二次确认");
 	assertMatchesOutputSchema(tool, round1);
 	const statePassed = readCost(cwd, chainId);
 	assert.strictEqual(statePassed.confirmed, true);
@@ -331,7 +326,7 @@ test("A08-1 round2 读归档复算：小改动→changeRatio<3 收敛，沿用�
 	const docRound2 = docRound1.replace(A08_SENTENCE, `${A08_SENTENCE}X`);
 	const harness = makeHarness(makeReport(A08_SENTENCE));
 	const tool = createDocReviewTool(harness.deps);
-	const exec = makeExec(cwd, harness.concludeTurnCalls);
+	const exec = makeExec(cwd);
 
 	const round1 = await tool.execute(
 		{ target_content: docRound1, max_rounds: 3 },
@@ -382,11 +377,11 @@ test("A08-2 归档读回失败且无 prev_document：抛多轮链断裂错误，
 				prev_round: 1,
 				max_rounds: 3
 			},
-			makeExec(cwd, harness.concludeTurnCalls)
+			makeExec(cwd)
 		),
 		/多轮链断裂/
 	);
-	assert.strictEqual(harness.calls.length, 0, "链断裂不得派发子会话");
+	assert.strictEqual(harness.count("invoke:create"), 0, "链断裂不得派发子会话");
 });
 
 /* ========================================================================= */
@@ -406,19 +401,19 @@ test("T10 分级 mode=sample：抽样文本喂子会话、仅 fact/format、成�
 
 	const result = await tool.execute(
 		{ target_content: fullDocument, mode: "sample", max_rounds: 1 },
-		makeExec(cwd, harness.concludeTurnCalls)
+		makeExec(cwd)
 	);
 
 	assert.ok(result.report, "sample 模式体量小，应直接成功");
 	assert.strictEqual(result.costEstimate.mode, "sample");
-	assert.strictEqual(harness.calls.length, 1);
+	assert.strictEqual(harness.count("invoke:create"), 1);
 
-	// 抽样计划与实际喂给子会话的 prompt 一致。
+	// 抽样计划与实际喂给审查 session 的 prompt 一致。
 	const plan = buildSamplePlan(fullDocument, "sample");
 	assert.deepEqual(plan.activeDimensions, ["fact", "format"]);
 	assert.ok(plan.samplingDetail.sampled === true);
-	const promptText = harness.calls[0].prompt[0].text;
-	assert.ok(promptText.includes(plan.sampledText.slice(0, 24)), "子会话 prompt 须含抽样文本");
+	const promptText = harness.prompts[0];
+	assert.ok(promptText.includes(plan.sampledText.slice(0, 24)), "审查 session prompt 须含抽样文本");
 
 	// 成本字符口径 = 抽样文本 + 仅 fact/format 维度的输入包（不含子会话输出指令段）。
 	const sampledPackage = buildReviewInput({
@@ -457,13 +452,13 @@ test("target_file 读取工作区文件成功：正文进审查与归档，无�
 
 	const result = await tool.execute(
 		{ target_file: "original.md", max_rounds: 1 },
-		makeExec(cwd, harness.concludeTurnCalls)
+		makeExec(cwd)
 	);
 
 	assert.ok(result.report, "target_file 路径应正常出报告");
-	assert.strictEqual(harness.calls.length, 1, "应派发一次子会话");
-	const promptText = harness.calls[0].prompt[0].text;
-	assert.ok(promptText.includes(A08_SENTENCE), "子会话 prompt 须含文件正文");
+	assert.strictEqual(harness.count("invoke:create"), 1, "应派发一次审查 session");
+	const promptText = harness.prompts[0];
+	assert.ok(promptText.includes(A08_SENTENCE), "审查 session prompt 须含文件正文");
 	// 归档 document.md 与源文件一致（完整正文，非抽样）。
 	const archived = readFileSync(
 		join(cwd, ".doc-review", result.chainId, "round-1", "document.md"),
@@ -477,7 +472,7 @@ test("target_file 边界：绝对路径与 .. 穿越、不存在文件 → 结�
 	const cwd = await mkdtempAsync(join(tmpdir(), "docrev-tfile-neg-"));
 	const harness = makeHarness(makeReport(A08_SENTENCE));
 	const tool = createDocReviewTool(harness.deps);
-	const exec = makeExec(cwd, harness.concludeTurnCalls);
+	const exec = makeExec(cwd);
 
 	await assert.rejects(
 		tool.execute({ target_file: join(cwd, "original.md") }, exec),
@@ -494,7 +489,7 @@ test("target_file 边界：绝对路径与 .. 穿越、不存在文件 → 结�
 		/文件不存在/,
 		"不存在文件必须报错"
 	);
-	assert.strictEqual(harness.calls.length, 0, "全部参数错误路径均不得派发子会话");
+	assert.strictEqual(harness.count("invoke:create"), 0, "全部参数错误路径均不得派发子会话");
 });
 
 /* ========================================================================= */
@@ -502,52 +497,44 @@ test("target_file 边界：绝对路径与 .. 穿越、不存在文件 → 结�
 /* ========================================================================= */
 
 /**
- * 构造 subagents stub：按调用次序返回不同结果（首次不合规、其后合规报告）。
- * @param {object[]} resultsByAttempt 每次 start 返回的 outcome（result promise resolve 值）。
- * @returns {{deps: object, calls: object[]}} 探测集合。
+ * 构造 gateway/jobs stub：按 monitor job 次序返回不同结论文本
+ * （首次不合规、其后合规报告）。v0.3.0 起重试为同一审查 session 追 prompt +
+ * 新 monitor job（不重开 session），故 attempt 序号按 job 序号取。
+ * @param {string[]} resultTextsByAttempt 每次 attempt 的结论文本（末项不足时重复末项）。
+ * @returns {object} makeReviewHarness 产物。
  */
-function makeSequenceHarness(resultsByAttempt) {
-	const calls = [];
-	const deps = {
-		subagents: {
-			getProvider: () => ({}),
-			start: async (_provider, request) => {
-				calls.push(request);
-				const outcome = resultsByAttempt[Math.min(calls.length, resultsByAttempt.length) - 1];
-				return {
-					id: `run-${calls.length}`,
-					result: Promise.resolve(outcome),
-					dispose: async () => {}
-				};
-			}
-		}
-	};
-	return { deps, calls };
+function makeSequenceHarness(resultTextsByAttempt) {
+	return makeReviewHarness({
+		attempts: resultTextsByAttempt.map((result) => ({ wait: { status: "completed" }, result }))
+	});
 }
 
 test("R1 重试可见性：首次不合规重试后成功 → retries 字段、deferContext 注入、attempts=2", async () => {
 	const cwd = await mkdtempAsync(join(tmpdir(), "docrev-retry-"));
 	const document = `# 重试测试文档\n\n${MOD_SENTENCE}\n`;
 	const goodReport = makeReport(MOD_SENTENCE);
+	// 首次：缺 issues 的不合规 JSON（parseFreeformReport 校验失败 → 判 invalid 重试）；
+	// 第二次：合规报告 JSON。
 	const harness = makeSequenceHarness([
-		{ stopReason: "completed", structured: { summary: "缺 issues 的不合规报告", newIssueCount: 0, round: 1, chainId: "" }, output: [] },
-		{ stopReason: "completed", structured: goodReport, output: [] }
+		JSON.stringify({ summary: "缺 issues 的不合规报告", newIssueCount: 0, round: 1, chainId: "" }),
+		JSON.stringify(goodReport)
 	]);
 	const tool = createDocReviewTool(harness.deps);
-	const exec = makeExec(cwd, harness.concludeTurnCalls);
+	const exec = makeExec(cwd);
 
 	const result = await tool.execute(
 		{ target_content: document, max_rounds: 1 },
 		exec
 	);
 
-	assert.strictEqual(harness.calls.length, 2, "首次不合规须触发一次重试");
+	assert.strictEqual(harness.count("invoke:create"), 1, "重试不重开 session，仅追 prompt");
+	assert.strictEqual(harness.count("invoke:prompt"), 2, "首 prompt + 1 次重试 prompt");
 	assert.strictEqual(result.attempts, 2, "attempts=1 次初始 + 1 次重试");
 	assert.strictEqual(Array.isArray(result.retries), true);
 	assert.strictEqual(result.retries.length, 1, "恰好一条重试记录");
 	const record = result.retries[0];
 	assert.strictEqual(record.attempt, 1);
-	assert.strictEqual(record.stopReason, "completed");
+	assert.strictEqual(record.stopReason, "invalid", "session 架构下不合规 JSON 判 invalid（旧 subagents 架构为 completed）");
 	assert.strictEqual(record.willRetry, true);
 	assert.ok(Array.isArray(record.violations), "violations 须为数组");
 	assert.ok(record.reason.length > 0, "reason 须为人类可读描述");
@@ -571,14 +558,14 @@ test("R1 零重试：首次即合规 → 无 deferContext 注入、retries 缺�
 	const document = `# 无重试文档\n\n${MOD_SENTENCE}\n`;
 	const harness = makeHarness(makeReport(MOD_SENTENCE));
 	const tool = createDocReviewTool(harness.deps);
-	const exec = makeExec(cwd, harness.concludeTurnCalls);
+	const exec = makeExec(cwd);
 
 	const result = await tool.execute(
 		{ target_content: document, max_rounds: 1 },
 		exec
 	);
 
-	assert.strictEqual(harness.calls.length, 1);
+	assert.strictEqual(harness.count("invoke:create"), 1);
 	assert.strictEqual(result.attempts, 1);
 	assert.strictEqual(result.retries === undefined || result.retries.length === 0, true);
 	assert.strictEqual(exec.deferredContexts.length, 1, "零重试仅保留 T07 行动指令，不得注入重试提示");

@@ -9,7 +9,7 @@
 审查在独立子会话中进行，不污染主会话上下文；主 Agent 只消费结构化结论，可据此逐轮修订文档，形成「审查 → 修订 → 复审」的多轮收敛链。
 
 - **运行时**：Node.js ≥ 20，DSH `@deepseek-ai/dsh` `>=0.2.0-rc.1 <0.3.0`
-- **依赖宿主服务**：`commands` / `tools` / `subagents` / `sessions` / `skills`（需要可用的 spawn 子会话 provider）
+- **依赖宿主服务**：`commands` / `tools` / `typertGateway` / `jobs` / `sessions` / `skills`（审查经 TypertGateway 开独立 session + 后台 job 监视，v0.3.0 起不再走 subagents spawn）
 - **许可证**：MIT
 
 ---
@@ -32,7 +32,7 @@
 
 ## 特性
 
-- **隔离审查**：每次审查 spawn 独立子会话，输出经 JSON Schema 强校验；无法解析的自由文本走降级路径，不把脏数据抛给主 Agent。
+- **隔离审查**：每次审查经 TypertGateway 开独立审查 session（v0.3.0 起）+ 后台 job 监视，输出经 JSON Schema 强校验；无法解析的自由文本走降级路径，不把脏数据抛给主 Agent。
 - **四个审查维度**：`fact`（事实）、`completeness`（完整性）、`necessity`（必要性）、`format`（格式），可逐维开关。
 - **三种文档输入**：`target_content`（内联全文）、`target_message_id`（指向主会话某条消息）、`target_file`（工作区相对路径，**审查大文件时推荐**，无需把全文塞进工具参数）。
 - **多轮收敛链**：以 `chain_id` 串联，自动读回上一轮归档文档做变更比对（行级 + 字符级 LCS）、跨轮对齐 issue、复算新增/解决数并判定是否收敛。
@@ -52,17 +52,19 @@ dsh-doc-review（指令层）在当前 agent 作用域注册 doc_review 工具
   ▼
 dsh-doc-review（工具层）
   │  1. 参数与多轮链校验（round / chain_id / max_rounds）
-  │  2. 多轮时读回上一轮归档文档（失败回退 prev_document，皆无 → 结构化错误，不派子会话）
+  │  2. 多轮时读回上一轮归档文档（失败回退 prev_document，皆无 → 结构化错误，不开审查 session）
   │  3. 组装审查输入包（目标文档 + 参考资料 + 审查规则 + 维度清单 + 可选上轮报告）
-  │  4. token 成本预估 → 超阈值则返回 confirmationRequired 并 concludeTurn()
-  │  5. spawn 独立审查子会话（默认零外部工具，输出受 JSON Schema 约束）
-  │  6. 回收结构化报告；多轮时复算变更率 / 对齐 issue / 判定收敛
-  │  7. 写归档，返回 report + adjudication_template + next_action
+  │  4. token 成本预估 → 超阈值则返回 confirmationRequired（不开审查 session）
+  │  5. 开独立审查 session 并排入审查任务（默认零外部工具，输出受 JSON Schema 约束）
+  │  6. 后台 job 监视：分片续等 + session 存活度判定 + 结论抢救（salvage）；
+  │     超时未交付时写链账本，同链同轮同文档重调自动续取该 session 结论
+  │  7. 回收结构化报告；多轮时复算变更率 / 对齐 issue / 判定收敛
+  │  8. 写归档，返回 report + adjudication_template + next_action
   ▼
 主 Agent 按裁决表修订文档 → 带 chain_id / prev_round 发起下一轮
 ```
 
-审查子会话默认**不授予外部工具**（`web_fact_check: true` 才开放 `web_search` / `web_fetch`），以保证结论只来自文档本身与给定参考资料。
+审查 session 默认**不授予外部工具**（`web_fact_check: true` 才开放 `web_search` / `web_fetch`），以保证结论只来自文档本身与给定参考资料。
 
 ## 安装与挂载
 
@@ -85,14 +87,14 @@ dsh web --port <自定义端口> --patch (Resolve-Path <插件目录>\cordis.pat
 
 加载成功时，宿主日志会出现 `doc_review_plugin_applied` 与 `doc_review_command_registered`；此时斜杠指令 `/doc-review` 已可用，但 **`doc_review` 工具尚未注册**——需按[下一节](#激活方式doc-review)在会话中手动激活。
 
-> spawn provider 缺失时插件仍会注册，但运行期会降级为 same-session（日志有 warn）。要获得真正的隔离审查，请确认宿主的 subagents spawn 服务可用。
+> typertGateway/jobs 缺失时插件仍会注册（惰性构造，apply 不抛错），但运行期审查会降级为 same-session（日志有 warn）。要获得真正的隔离审查，请确认宿主的 TypertGateway 与 jobs 服务可用。
 
 ### 方式 B：作为插件长期安装
 
 若你的 DSH 版本支持从 git 安装第三方插件，可直接：
 
 ```bash
-dsh plugin add github:JiewiW/dsh-doc-review#v0.3.2
+dsh plugin add github:JiewiW/dsh-doc-review#v0.3.3
 ```
 
 不同 0.2.0 预览版的插件安装命令可能有差异，以当前 DSH 版本的 `dsh --help` / 插件文档为准；方式 A 的 `--patch` overlay 是与具体版本耦合最小、最稳妥的挂载方式。
@@ -189,6 +191,7 @@ dsh plugin add github:JiewiW/dsh-doc-review#v0.3.2
 .doc-review/
 └── <chain_id>/
     ├── chain-cost.json              # 链级成本/确认状态
+    ├── chain-session.json           # 链级审查 session 账本（续取用：sessionId/round/targetHash/delivered）
     ├── round-1/
     │   ├── document.md              # 本轮目标文档
     │   ├── review-report.json       # 结构化报告
@@ -211,7 +214,7 @@ node --test
 
 > Windows 下请用自动发现形式（`node --test`），不要把目录路径作为位置参数传入。
 
-测试覆盖：Schema 合法性、上下文组装、成本判定、收敛/对齐算法、工具层端到端（subagents 全 stub，含成本闸门、多轮归档读回、链断裂、`target_file` 路径防护、sample 抽样）以及 host 入口装配冒烟。
+测试覆盖：Schema 合法性、上下文组装、成本判定、收敛/对齐算法、工具层端到端（gateway/jobs 全 mock，含成本闸门、多轮归档读回、链断裂、`target_file` 路径防护、sample 抽样）、审查 session 结论抢救与分片续等、链级 session 续取与 sessionId 全链路透传，以及 host 入口装配冒烟。
 
 ## 仓库结构
 
@@ -241,8 +244,9 @@ dsh-doc-review/
 ## 已知边界
 
 - **激活是会话级的**：`/doc-review` 只在执行它的那一个会话内生效；新开会话或会话关闭后必须重新激活，这是 v0.2.0 的预期行为而非缺陷。
-- 依赖宿主提供 subagents **spawn provider**；缺失时降级为 same-session，审查不再与会话隔离。
+- 依赖宿主提供 TypertGateway 与 jobs 服务；缺失时降级为 same-session，审查不再与会话隔离。
 - `references` 不抓取 URL，只接受内联文本与工作区内文件。
 - 多轮链要求上一轮文档可从归档读回，或显式提供 `prev_document`；两者皆无会返回结构化错误且不派子会话。
 - 大文档建议用 `target_file`：把整篇全文内联进单个工具调用参数会显著增大单次请求体。
+- 长 CoT 审查（默认总超时 900s，`timeout_ms` 可上调至 1800s）：超时未收敛时带同一 `chain_id` 重调将自动续取该审查 session 结论，无需手工粘贴。
 - 本插件随 0.2.0 预览版 DSH 开发，宿主内核 API（服务名、工具注册约定）在稳定版前可能变动。

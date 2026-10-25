@@ -1,10 +1,13 @@
 /**
- * test/reviewer.test.mjs —— 子会话弱模型容错单测。
+ * test/reviewer.test.mjs —— 审查员 prompt 装配与自由文本兜底单测（纯函数层）。
  *
  * 覆盖两条改造（针对「JSON 吐在正文里被判失败」+「重试重灌全文」的实测失败）：
  * - parseFreeformReport：正文含合规 JSON 时兜底回收；正文非法时不回收。
  * - buildAttemptPrompt：重试默认不再重灌输入包全文；location 引句类违规才回退重灌。
- * - runReviewerSession：structured 缺失但正文合规时，一次尝试即出 report，不重试。
+ *
+ * runReviewerSession（v0.3.0 起迁至 lib/session-reviewer.js）的会话级用例
+ * （salvage/timeout/重试/续取）由 test/test-session-salvage.mjs 与
+ * test/test-chain-resume.mjs 覆盖，本文件不再重复。
  *
  * 运行：node --test test/reviewer.test.mjs（依赖内核真实校验器 dsh-tools）。
  */
@@ -16,7 +19,6 @@ import {
 	parseFreeformReport,
 	extractJsonObject,
 	buildAttemptPrompt,
-	runReviewerSession,
 	BASE_OUTPUT_INSTRUCTION
 } from "../lib/reviewer.js";
 
@@ -88,15 +90,15 @@ test("parseFreeformReport：非对象 JSON（数组/null）不回收", () => {
 	assert.equal(parseFreeformReport("null", makeContext()), null);
 });
 
-test("BASE_OUTPUT_INSTRUCTION 要求调用 structured_output 工具而非输出纯文本", () => {
-	assert.match(BASE_OUTPUT_INSTRUCTION, /structured_output/);
-	assert.match(BASE_OUTPUT_INSTRUCTION, /工具调用/);
+test("BASE_OUTPUT_INSTRUCTION 要求以 ```json 围栏纯文本输出而非调用工具", () => {
+	assert.match(BASE_OUTPUT_INSTRUCTION, /```json/);
+	assert.match(BASE_OUTPUT_INSTRUCTION, /不要调用任何工具/);
 });
 
 test("buildAttemptPrompt：首次尝试包含输入包全文", () => {
 	const prompt = buildAttemptPrompt("【目标文档】全文内容", null);
 	assert.match(prompt, /【目标文档】全文内容/);
-	assert.match(prompt, /structured_output/);
+	assert.match(prompt, /```json/);
 });
 
 test("buildAttemptPrompt：普通违规重试不再重灌输入包全文", () => {
@@ -109,7 +111,7 @@ test("buildAttemptPrompt：普通违规重试不再重灌输入包全文", () =>
 	assert.doesNotMatch(prompt, /【目标文档】全文内容不应出现/);
 	assert.match(prompt, /只修格式/);
 	assert.match(prompt, /上一版输出/);
-	assert.match(prompt, /structured_output/);
+	assert.match(prompt, /```json/);
 });
 
 test("buildAttemptPrompt：location 引句类违规回退重灌输入包", () => {
@@ -126,79 +128,4 @@ test("buildAttemptPrompt：stopReason=error 回退重灌输入包", () => {
 	const failure = { stopReason: "error", violations: [], priorPayload: "" };
 	const prompt = buildAttemptPrompt("【目标文档】异常结束需重来", failure);
 	assert.match(prompt, /【目标文档】异常结束需重来/);
-});
-
-/** 构造一个最小 subagents.start 替身：按脚本依次返回给定结果。 */
-function makeFakeSubagents(script) {
-	const calls = [];
-	let index = 0;
-	return {
-		calls,
-		start: async (_provider, request) => {
-			const entry = script[Math.min(index, script.length - 1)];
-			index += 1;
-			calls.push(request.prompt[0].text);
-			if (entry.throws) throw new Error(entry.throws);
-			return {
-				id: `run-${index}`,
-				result: Promise.resolve(entry.result),
-				dispose: async () => {}
-			};
-		}
-	};
-}
-
-test("runReviewerSession：正文合规 JSON 一次即成功，不发起重试", async () => {
-	const subagents = makeFakeSubagents([
-		{
-			result: {
-				stopReason: "completed",
-				output: [{ type: "text", text: JSON.stringify(makeReport()) }]
-			}
-		}
-	]);
-	const outcome = await runReviewerSession(
-		{ subagents, validateJsonSchemaValue },
-		{
-			inputText: "【目标文档】全文",
-			targetText: TARGET_TEXT,
-			timeoutMs: 5_000
-		}
-	);
-	assert.equal(outcome.kind, "report");
-	assert.equal(outcome.attempts, 1);
-	assert.equal(outcome.retries.length, 0);
-	assert.equal(subagents.calls.length, 1);
-});
-
-test("runReviewerSession：第二次尝试不再携带输入包全文", async () => {
-	const brokenReport = makeReport();
-	delete brokenReport.chainId;
-	const subagents = makeFakeSubagents([
-		{
-			result: {
-				stopReason: "completed",
-				structured: brokenReport,
-				output: [{ type: "text", text: JSON.stringify(brokenReport) }]
-			}
-		},
-		{
-			result: {
-				stopReason: "completed",
-				output: [{ type: "text", text: JSON.stringify(makeReport()) }]
-			}
-		}
-	]);
-	const outcome = await runReviewerSession(
-		{ subagents, validateJsonSchemaValue },
-		{
-			inputText: "【目标文档】标记不重复",
-			targetText: TARGET_TEXT,
-			timeoutMs: 5_000
-		}
-	);
-	assert.equal(outcome.kind, "report");
-	assert.equal(subagents.calls.length, 2);
-	assert.match(subagents.calls[0], /【目标文档】标记不重复/);
-	assert.doesNotMatch(subagents.calls[1], /【目标文档】标记不重复/);
 });

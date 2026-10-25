@@ -2,6 +2,27 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 约定，版本号遵循语义化版本。
 
+## [0.3.3] - 2026-10-25
+
+### 修复
+
+针对 2026-10-25 长 CoT 误判事故（会话 session-68727f69：审查员 605s 产出结论，插件 300.2s 分片点判 timeout 并 kill monitor，结论已产出却被丢弃；主会话未记住审查 session id，回查找不到最终靠用户手工粘贴 JSON）实施六项修复：
+
+- **F1 sessionId 全路径回传**：`runReviewerSession` 所有产出过 session 的信封（report/freeform/timeout/aborted/start-error）一律带 `sessionId` + `promptedAt`；service 所有信封 kind 透传；tool 所有降级分支与 report 信封透传；`renderToolResult` 渲染「审查 session：…（标题 doc-review-xxxxxxxx；超时未收敛时带同一 chain_id 重调将自动续取该 session 结论）」行，主会话可直接凭 id/标题定位审查会话。
+- **F2 分片续等替代单次 300s 上限**：`jobs.wait` 改为 `min(WAIT_CHUNK_MS=30s, remaining)` 循环续等；分片到点只判 session 存活度，不提前 kill（旧实现 300s 即 kill+timeout，605s 结论被丢）。
+- **F3 存活度判据改为 session summary**：新增 `checkReviewSessionLiveness`——`summary.running===true` 恒活；非 true 时 `now-updatedAt ≤ SESSION_STALL_MS=90s` 判活（刚结束/即将开始等 monitor 追上）；字段缺失或 list 失败保守判活。弃用「事件时间新近度」（取证：37 次 heartbeat 全部发生在会话完成之后，该判据会误杀正在长 CoT 的会话）。
+- **F4 默认超时 600s → 900s**：`DEFAULT_TIMEOUT_MS` 上调；工具参数新增 `timeout_ms`（integer，60_000..1_800_000，execute 内校验边界并透传），保留人工上调空间。
+- **F5 链级 session 续取**：新增链账本 `chain-session.json`（`{sessionId, round, promptedAt, targetHash, delivered, updatedAt}`）；续取条件 = 记录存在 **且 delivered!==true 且 round 匹配 且 targetHash===hashReviewText(送审文本)**（三闸防串结论）；续取时不新开 session、不重发 prompt，`startedAt` 取账本记录值；`delivered` = 结论已交付调用方（report/freeform 为 true；timeout/aborted/start-error 为 false 允许续取）；账本 session 不存在时回退新开。
+- **F6 标题带链**：审查 session 标题改 `doc-review-<chainId 后 8 位>`，会话列表可检索。
+- 附带修复：`launchReviewSession` 的 `selectModel` 请求此前丢弃 `reasoningEffort`（本次补透传）；`index.js` apply 内 service 改惰性构造 + facade（gateway/jobs 未就绪时 warn 不抛 TypeError）；`service.js` workspaceRoot 前置计算改走 `params.parentAgent`（修 TDZ）。
+
+### 测试
+
+- 新增共享 harness `test/gateway-harness.mjs`（gateway/jobs 全 mock，attempt 按 job 序号脚本化，wait/read/get/kill 同步/异步契约与真源一致）。
+- 新增 `test/test-chain-resume.mjs`（7 用例）：R-1 事故流（timeout 未交付→同参重调续取收结论）、R-2 已交付不续取、R-3 轮次/文档变化不续取、R-4 账本 session 不存在回退新开、F6 标题带链、F4 timeout_ms 边界、T-R1 工具级续取 + F1 渲染。
+- `test/test-session-salvage.mjs` 扩到 A–H 八用例：mock 支持 wait 序列与 list summary；新增 G（分片到点 session 活跃→续等收到结论，编码 605s 事故）与 H（活跃但预算耗尽→kill+timeout）。
+- service/tool 测试自 subagents stub 迁移至 gateway/jobs harness（旧 mock 撞 `deps.gateway 为必注入服务` 全部失败）；全量 `node --test` **160 通过 0 失败**（迁移前基线 115/141）。
+
 ## [0.3.2] - 2026-10-25
 
 ### 修复

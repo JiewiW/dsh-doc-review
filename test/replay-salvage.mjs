@@ -5,7 +5,7 @@
  * 语料不入库：把子会话 dump 放在任意本地目录，用环境变量指向它后运行：
  *   DOC_REVIEW_REPLAY_DIR=<dump目录> node test/replay-salvage.mjs
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateJsonSchemaValue } from "@deepseek-ai/dsh-tools";
 import { parseFreeformReport } from "../lib/reviewer.js";
@@ -17,10 +17,20 @@ const session_ids = [
 	"50258ceb-4932-42e9-8609-f67c445adcdf"
 ];
 
+// 语料缺失（未提供 dump 目录）时整体跳过：本脚本是取证回放工具，不是回归用例，
+// 语料不入库（见头注），node --test 全量跑不应因缺文件而红。
+const corpus_dir = process.env.DOC_REVIEW_REPLAY_DIR ?? ".";
+const missing_ids = session_ids.filter((id) => !existsSync(join(corpus_dir, `${id}.jsonl`)));
+if (missing_ids.length > 0) {
+	console.log(
+		`replay-salvage: SKIP（语料缺失 ${missing_ids.length}/${session_ids.length}；` +
+			"设 DOC_REVIEW_REPLAY_DIR 指向 dump 目录后运行）"
+	);
+	process.exit(0);
+}
+
 /** 读取子会话 dump 的全部事件（已解码）。 */
 function readEvents(id) {
-	// 语料根目录：默认仓库根，可用环境变量 DOC_REVIEW_REPLAY_DIR 指向本地 dump 目录。
-	const corpus_dir = process.env.DOC_REVIEW_REPLAY_DIR ?? ".";
 	return readFileSync(join(corpus_dir, `${id}.jsonl`), "utf8")
 		.split(/\r?\n/)
 		.filter((l) => l.trim())
