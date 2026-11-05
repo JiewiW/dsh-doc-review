@@ -76,6 +76,13 @@ const STALLED_SUMMARY = { running: false, updatedAt: Date.now() - 200_000 };
 const RUNNING_SUMMARY = { running: true };
 
 /**
+ * mock 事件时间余量：launchReviewSession 的 promptedAt 在 create/rename/selectModel
+ * 之后才取，比 harness 的 promptedAt 更晚；并发调度下 1ms 余量会让结论事件被判为
+ * 「审查开始之前」，salvage 偶发判 timeout。留足余量消除该 flaky。
+ */
+const EVENT_TIME_MARGIN_MS = 5_000;
+
+/**
  * 构造审查 session 事件流（assistant 结论文本 + turn/end completed）。
  * @param {string} freeformText assistant/message 的 text 内容。
  * @param {number} t 事件时间戳（必须 ≥ startedAt；调用方传 promptedAt）。
@@ -198,7 +205,7 @@ function makeParams(overrides = {}) {
 test("用例 A：wait 超时但 session 已产出合规 JSON → report 而非 timeout", async () => {
 	const h = makeHarness({
 		waitView: { status: "running" },
-		records: (t) => makeEvents(VALID_REPORT_JSON, t + 1),
+		records: (t) => makeEvents(VALID_REPORT_JSON, t + EVENT_TIME_MARGIN_MS),
 		listSummary: STALLED_SUMMARY
 	});
 	const outcome = await runReviewerSession(h.deps, makeParams());
@@ -316,7 +323,7 @@ test("用例 E：monitor 正常 settle → 仍走 report 路径（不受 salvage
 test("用例 F：salvage 命中但 JSON 不合规 → freeform 且 rePromptReviewSession 零调用", async () => {
 	const h = makeHarness({
 		waitView: { status: "running" },
-		records: (t) => makeEvents("这不是合法 JSON", t + 1),
+		records: (t) => makeEvents("这不是合法 JSON", t + EVENT_TIME_MARGIN_MS),
 		listSummary: STALLED_SUMMARY
 	});
 	const outcome = await runReviewerSession(h.deps, makeParams());

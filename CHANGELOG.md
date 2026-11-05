@@ -2,6 +2,48 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 约定，版本号遵循语义化版本。
 
+## [0.3.4] - 2026-11-05
+
+### 修复
+
+针对「审查子会话格式化输出反复被判失效」事故（三份取证输出均为完整合法的
+围栏 JSON，却连续 3 次被拒收）实施四项修复：
+
+- **字段契约统一**：`lib/schema.js` 新增 `REPORT_FIELDS` / `ISSUE_FIELD_HINTS`，
+  `BASE_OUTPUT_INSTRUCTION` 改为由 `ISSUE_FIELDS` 生成字段清单（顶层 5 字段 /
+  issues 每条 7 字段：id、dimension、severity、location、claim、evidence、
+  suggestion），顶层 `required` 也改为引用常量。旧指令写作 `title`/`description`
+  等 6 字段，与 T02a Schema（`additionalProperties:false`）必然冲突——每条 issue
+  缺 id/dimension/claim、多 title/description，实测单份报告 20~41 条违规，模型
+  无论如何重试都不可能通过。
+- **失败原因回传**：新增 `inspectFreeformReport`，返回完整违规明细与
+  `hasCompleteJsonObject`；`judgeFreeformOutcome` 用真实违规填充
+  `failure.violations` 与 `priorPayload`，`buildAttemptPrompt` 把前 5 条违规
+  （附总数与「同类错误须修正全部 issues」）写进重试 prompt，`describeRetryRecord`
+  同步让主 Agent 看到具体字段错误，不再只写「输出无法解析为合规 JSON」。
+- **截断误判修复**：旧判据 `trimmed.includes('"summary"') && !trimmed.endsWith("}")`
+  对任何「前言 + ```json 围栏」输出恒为真（结尾是 ``` 而非 }），把完整报告误标
+  `max-tokens` 并发出「压缩 issues 数量」这种无关指令。现仅当 `extractJsonObject`
+  切不出完整闭合对象且残留报告骨架时才判截断。
+- **重试路径修正**：`stopReason="invalid"` 归入「只修格式」类，不再触发重灌目标
+  文档全文；`RETRY_INSTRUCTION_INVALID` 与 `CORRECTION_TASK_HEADER` 明确要求按
+  字段清单逐字修正、禁止自造或删减字段名。
+
+### 测试
+
+- 新增 `test/reviewer-contract.test.mjs`（6 用例）：字段清单与 Schema 同源、
+  7 字段围栏报告可回收、6 字段旧格式诊断出真实违规且不判截断、重试提示含真实
+  违规且不含压缩指令、真截断仍判 max-tokens、location 违规仍回退重灌。
+- 全量 `node --test` 与 `test-session-salvage.mjs` / `test-chain-resume.mjs` 通过。
+- 顺带修复 `test-session-salvage.mjs` 的并发偶发失败：mock 结论事件仅比
+  `promptedAt` 晚 1ms，而 `launchReviewSession` 在 create/rename 之后才取时间戳，
+  并发调度下事件被判为「审查开始前」→ salvage 误判 timeout；改为固定 5s 余量。
+
+### 兼容性
+
+- `parseFreeformReport` 返回值形态不变（通过→`{report,payloadText}`，失败→`null`）；
+  报告 Schema、工具输出 Schema、重试上限与降级语义均不变。
+
 ## [0.3.3] - 2026-10-25
 
 ### 修复
