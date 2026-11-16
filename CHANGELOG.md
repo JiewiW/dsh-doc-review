@@ -2,6 +2,20 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 约定，版本号遵循语义化版本。
 
+## [0.3.6] - 2026-11-16
+
+### 修复
+
+- **archive=false 不再写盘**：v0.3.5 的 trace 接线（TRC-R13）在 `reviewPrompt`
+  包装层无条件调用 `recordInvocation`，而 `invocation.jsonl` 落在归档目录
+  `<workspaceRoot>/.doc-review/<chainId>/` 下——`archive=false` 调用因此把归档
+  目录凭空造出来，破坏「不归档就不落盘」的契约（SVC-9 回归）。现按 `archive`
+  开关门控该写入；`archive=false` 时的分母仍由会话侧 `trace/invocation` 事件承担。
+
+## [0.3.5] - 2026-11-15
+
+- 引入 DSH trace 契约底座（`trace/*` 事件、invocation 侧车、收敛/裁决侧车）。
+
 ## [0.3.4] - 2026-11-05
 
 ### 修复
