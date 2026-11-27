@@ -2,6 +2,34 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 约定，版本号遵循语义化版本。
 
+## [0.3.7] - 2026-11-27
+
+### 修复
+
+- **兼容 DSH 0.2.2-rc.5 内核**：五个 `@deepseek-ai` 子包依赖（commands / tools /
+  api-gateway / jobs / llm）由钉死的 `0.2.0-rc.2` 对齐到 `0.2.2-rc.5`，
+  `schemastery` 由 `~3.18.4` 对齐到 `~3.19.0`，peer 范围收窄为
+  `>=0.2.2-rc.5 <0.3.0-0`。旧版依赖会被内核版本栅栏判为 incompatible，
+  禁用 profile 的 `tools` 与 `typert-gateway` 插件行，使插件 inject 的
+  `tools` / `typertGateway` 服务缺失——升级后不再触发该栅栏。
+- 新增 `test/compat-022.test.mjs` 作为回归门禁，锁死依赖版本与
+  `defineTool` / `validateJsonSchemaValue` / `ToolArgsError` /
+  `createUserMessage` / `CommandDefinitionId` 等关键运行时导出。
+
+### 测试
+
+- `node --test test/*.test.mjs`：150/150 通过（含新增兼容门禁 2 例）。
+- `test/smoke-apply.mjs`、`test/test-session-salvage.mjs`（8 例）、
+  `test/test-chain-resume.mjs`（7 例）全部通过。
+- 新建隔离 profile `docrev022-compat`（base + web-app bundle + 本地插件），
+  在 0.2.2-rc.5 内核上完成真实加载冒烟，确认插件注册成功且不再出现
+  tools / typert-gateway 的 incompatible 禁用行。
+
+### 升级注意
+
+- 已安装的 profile 必须重新执行一次依赖安装（`pnpm install`），把顶层
+  hoisted 的 0.2.0-rc.2 子包换成 0.2.2-rc.5，否则内核仍会按旧包禁用服务行。
+
 ## [0.3.6] - 2026-11-16
 
 ### 修复

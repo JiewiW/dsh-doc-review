@@ -32,7 +32,7 @@
 
 ## 安装与挂载
 
-本插件为 bundle patch 插件，`package.json` 的 `dsh.bundle.patch` 指向 [cordis.patch.yml](./cordis.patch.yml)。
+本插件为 bundle patch 插件，`package.json` 的 `dsh.bundle.patch` 指向 [cordis.patch.yml](./cordis.patch.yml)。v0.3.7 起依赖对齐 DSH 0.2.2-rc.5 内核；已安装的 profile 升级后需重新执行一次依赖安装，避免顶层残留 0.2.0-rc.2 子包触发内核版本栅栏。
 
 **方式 A：overlay 挂载（推荐，免安装、可随时移除）**。克隆仓库后，用 `--patch` 在独立端口的 DSH Web 实例上叠加加载，不写入任何 profile：
 
@@ -50,7 +50,7 @@ dsh web --port <自定义端口> --patch (Resolve-Path <插件目录>\cordis.pat
 **方式 B：作为插件长期安装**：
 
 ```bash
-dsh plugin add github:JiewiW/dsh-doc-review#v0.3.6
+dsh plugin add github:JiewiW/dsh-doc-review#v0.3.7
 ```
 
 ## 判据与验收

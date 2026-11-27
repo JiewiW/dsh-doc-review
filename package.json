@@ -1,6 +1,6 @@
 {
   "name": "dsh-doc-review",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "DeepSeek Harness (DSH) 文档审查插件：注册 doc_review 工具，派生独立审查 session 对目标文档做多维度、多轮结构化审查并落盘归档，后台 job 监视进度并收集结论（v0.3.0 放弃 subagent 派发）。需以 /doc-review 斜杠指令在本会话手动激活。",
   "keywords": [
     "dsh",
@@ -41,15 +41,15 @@
   },
   "homepage": "https://github.com/JiewiW/dsh-doc-review#readme",
   "dependencies": {
-    "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-api-gateway": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-jobs": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/schemastery": "~3.18.4"
+    "@deepseek-ai/dsh-commands": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-jobs": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.5",
+    "@deepseek-ai/schemastery": "~3.19.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": ">=0.2.0-rc.1 <0.3.0-0"
+    "@deepseek-ai/dsh": ">=0.2.2-rc.5 <0.3.0-0"
   },
   "license": "MIT"
 }
